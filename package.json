@@ -1,0 +1,25 @@
+{
+  "name": "emby-audio-downloader",
+  "version": "1.0.0",
+  "description": "Terminal-based audio stream extractor for Emby media servers without transcoding",
+  "main": "emby-audio-downloader.js",
+  "bin": {
+    "emby-audio-dl": "./emby-audio-downloader.js"
+  },
+  "scripts": {
+    "start": "node emby-audio-downloader.js"
+  },
+  "keywords": [
+    "emby",
+    "audio",
+    "downloader",
+    "stream-copy",
+    "ffmpeg",
+    "cli"
+  ],
+  "author": "Omc725",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
