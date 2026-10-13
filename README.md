@@ -1,11 +1,11 @@
 # emby-audio-downloader
 
-Emby medya sunucularından doğrudan ses akışı indirme aracı. Yeniden kodlama (transcoding) yapmadan, kaynaktaki orijinal ses akışını (stream copy) yerel depolama birimine aktarır.
+Emby medya sunucularından dönüştürme (transcoding) yapmadan doğrudan ses akışı, altyazı ve orijinal video dosyalarını indiren CLI aracı.
 
 ## Gereksinimler
 
 - Node.js (>= 18.0.0)
-- FFmpeg (sistem PATH dizininde tanımlı)
+- FFmpeg (sistem PATH dizininde tanımlı, doğrudan ses akışı kopyalama için gereklidir)
 
 ## Kurulum
 
@@ -27,14 +27,16 @@ veya npm üzerinden:
 npm start
 ```
 
-## Teknik Özellikler
+## Temel Özellikler
 
-- Doğrudan Ses Akışı: Sunucudan video akışını çekmeden yalnızca seçilen ses kanalını (`/Audio/{ItemId}/stream.mka`) indirir.
-- Kayıpsız Aktarım: `-c:a copy` parametresi kullanılarak ses kodeki dönüştürülmeden aktarılır.
-- Kapsayıcı Desteği: AC3, EAC3, DTS, TrueHD, AAC, MP3, FLAC, Opus formatlarını uygun dosya uzantılarına (`.ac3`, `.eac3`, `.dts`, `.mka`, `.m4a`, `.mp3`, `.flac`, `.opus`) otomatik eşler.
-- Ağ Kurtarma: HTTP Range yeniden bağlanma bayrakları (`-reconnect 1`, `-reconnect_streamed 1`, `-reconnect_delay_max 15`) ve otomatik yeniden deneme döngüsü ile bağlantı kesintilerini tolere eder.
-- Arama ve Gezinme: Başlık/dosya adı arama, TMDB/IMDb ID sorgulama ve dizi sezon/bölüm hiyerarşisi üzerinden seçim imkanı sunar.
+- **Dönüştürmesiz Ses Akışı:** Video akışını çekmeksizin doğrudan ses kanalını (`/Audio/{ItemId}/stream.mka`) `-c:a copy` parametresiyle kayıpsız olarak indirir.
+- **Tam Dosya (Video) İndirme:** Statik akış uç noktası (`/Videos/{ItemId}/stream.{container}?static=true`) üzerinden video, ses ve gömülü altyazıları içeren tam medya dosyasını indirir.
+- **Altyazı İndirme:** Emby altyazı akış uç noktası (`/Videos/{ItemId}/{MediaSourceId}/Subtitles/{Index}/Stream.srt`) üzerinden dahili veya harici altyazıları doğrudan metin formatında kaydeder.
+- **İndirme Kuyruğu:** İçerikleri tek tek indirmek yerine kuyruğa ekleme, kuyruğu listeleme, düzenleme ve toplu başlatma desteği sunar. Oturumlar arasında kuyruk verisi `~/.config/emby-audio-downloader/queue.json` dosyasında saklanır.
+- **Dizi Toplu İndirme:** Sezon bazında tüm sezonu (`T`) veya bölüm aralığını (`1-5`, `1,3,4`) seçerek toplu video, ses veya altyazı indirme imkanı sağlar.
+- **Ağ Kesintisi Toleransı:** HTTP Range desteği (`Accept-Ranges: bytes`) ile yarıda kalan video indirmeleri baştan başlamak yerine kaldığı bayttan devam eder. Ses indirmelerinde ise FFmpeg ağ yeniden bağlanma bayrakları ve otomatik yeniden deneme mekanizması kullanılır.
+- **Gerçek Zamanlı İlerleme:** Canlı terminal ilerleme çubuğu, yüzde, anlık indirme hızı (MB/s ve Mbps), indirilen/toplam boyut ve tahmini kalan süre (ETA) göstergesi sunar.
 
 ## Yapılandırma
 
-Oturum verileri `~/.config/emby-audio-downloader/config.json` dizininde saklanır.
+Oturum ve sunucu profilleri `~/.config/emby-audio-downloader/config.json` dosyasında saklanır.
