@@ -520,7 +520,7 @@ function cleanFilenameToTitle(filename) {
     /\b(2160p|1080p|1080i|720p|576p|480p|360p|4k|uhd|remux|bluray|blu-ray|web-dl|webrip|hdtv|dvdrip|brrip)\b/gi,
     /\b(x264|x265|h264|h265|hevc|avc|hdr|hdr10|dv|dolby\s*vision|truehd|atmos|dts|dts-hd|ac3|eac3|aac|mp3|flac)\b/gi,
     /\b(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})\b/gi,
-    /\b(filmbol|filmbolseries|netflix|amazon|disney|apple|hbo)\b/gi,
+    /\b(netflix|amazon|disney|apple|hbo)\b/gi,
     /#\d+/g
   ];
   for (const p of patterns) {
@@ -529,6 +529,66 @@ function cleanFilenameToTitle(filename) {
   s = s.replace(/[._\-+]/g, " ");
   s = s.replace(/\s+/g, " ").trim();
   return s;
+}
+
+function buildProgressLine(tag, percent, currentBytes, totalBytes, speedStr, etaStr) {
+  const termCols = process.stdout.columns || 80;
+  const maxCols = Math.max(30, termCols - 1);
+
+  const currentSizeStr = formatBytes(currentBytes);
+  const totalSizeStr = totalBytes > 0 ? formatBytes(totalBytes) : "? MB";
+  const sizeFull = `${currentSizeStr} / ${totalSizeStr}`;
+  const sizeCompact = currentSizeStr;
+
+  const percentStr = `${percent.toFixed(1)}%`;
+  const tagFull = tag;
+  const tagShort = tag.replace("Doğrudan ", "").replace(" (Kopyalama)", "");
+
+  const speedFull = speedStr;
+  const speedCompact = speedStr.replace(/\s*\([^)]*\)/, "");
+
+  const measureLen = (showT, shortT, barW, showE, shortSpd, shortSz) => {
+    let len = 0;
+    if (showT) len += (shortT ? tagShort.length : tagFull.length) + 3;
+    if (barW > 0) len += barW + 3;
+    len += percentStr.length;
+    len += 3 + (shortSz ? sizeCompact.length : sizeFull.length);
+    len += 3 + (shortSpd ? speedCompact.length : speedFull.length);
+    if (showE && etaStr) len += 3 + ("Kalan: " + etaStr).length;
+    return len;
+  };
+
+  let showTag = true;
+  let shortTag = false;
+  let showEta = Boolean(etaStr);
+  let shortSpeed = false;
+  let shortSize = false;
+  let barWidth = 20;
+
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) barWidth = 12;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) shortSpeed = true;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) barWidth = 8;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) showEta = false;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) shortTag = true;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) barWidth = 0;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) shortSize = true;
+  if (measureLen(showTag, shortTag, barWidth, showEta, shortSpeed, shortSize) > maxCols) showTag = false;
+
+  let barStr = "";
+  if (barWidth > 0) {
+    const filled = Math.min(barWidth, Math.round((percent / 100) * barWidth));
+    barStr = `[${C.green}${"█".repeat(filled)}${C.reset}${"░".repeat(barWidth - filled)}] `;
+  }
+
+  let out = "\r";
+  if (showTag) out += `${C.cyan}[${shortTag ? tagShort : tagFull}]${C.reset} `;
+  if (barWidth > 0) out += barStr;
+  out += `${C.brightGreen}${percentStr}${C.reset} | `;
+  out += `${C.brightWhite}${shortSize ? sizeCompact : sizeFull}${C.reset} | `;
+  out += `${C.brightYellow}${shortSpeed ? speedCompact : speedFull}${C.reset}`;
+  if (showEta && etaStr) out += ` | ${C.brightCyan}Kalan: ${etaStr}${C.reset}`;
+  out += "\x1b[K";
+  return out;
 }
 
 async function fetchTmdbMetadata(cleanId, isImdb) {
@@ -651,22 +711,22 @@ function downloadAudioStream(directAudioUrl, fallbackVideoUrl, audioStream, outp
               mbps = ` (${formatBytes(currentBytes / elapsedWall)}/s)`;
             }
 
-            let etaStr = "";
+            let eta = "";
             if (percent > 1 && percent < 100 && elapsedWall > 1) {
               const remainSec = Math.max(0, Math.round((elapsedWall / (percent / 100)) - elapsedWall));
               const m = Math.floor(remainSec / 60);
               const s = remainSec % 60;
-              etaStr = ` | ${C.brightCyan}Kalan:${C.reset} ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+              eta = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
             }
 
             const speed = speedMatch ? speedMatch[1] : "";
-            const status = `\r${C.cyan}[İndiriliyor]${C.reset} [${C.green}${bar}${C.reset}] ${C.brightGreen}${percent.toFixed(1).padStart(5)}%${C.reset} | ${C.brightWhite}${currentSizeStr} / ${totalSizeStr}${C.reset} | ${C.brightYellow}Hız: ${speed}${mbps}${C.reset}${etaStr}   `;
-            process.stdout.write(status);
+            const speedText = `Hız: ${speed}${mbps}`;
+            process.stdout.write(buildProgressLine("İndiriliyor", percent, currentBytes, totalBytesEst, speedText, eta));
           }
         });
 
         proc.on("close", (code) => {
-          process.stdout.write("\r" + " ".repeat(110) + "\r");
+          process.stdout.write("\r\x1b[2K");
           if (code === 0) {
             let finalSize = 0;
             try {
@@ -862,30 +922,21 @@ async function downloadFullVideo(arg1, arg2, arg3, arg4, arg5) {
             percent = Math.min(100, (downloadedBytes / totalBytes) * 100);
           }
 
-          const barWidth = 20;
-          const filled = Math.min(barWidth, Math.round((percent / 100) * barWidth));
-          const bar = "█".repeat(filled) + "░".repeat(barWidth - filled);
-
-          const currentSizeStr = formatBytes(downloadedBytes);
-          const totalSizeStr = totalBytes > 0 ? formatBytes(totalBytes) : "? MB";
-
           const elapsedSec = (now - startWall) / 1000;
           const sessionBytes = downloadedBytes - existingBytes;
           const speedBps = elapsedSec > 0 ? sessionBytes / elapsedSec : 0;
-          const speedStr = `${formatBytes(speedBps)}/s`;
-          const mbpsStr = `${((speedBps * 8) / (1000 * 1000)).toFixed(1)} Mbps`;
+          const speedStr = `Hız: ${formatBytes(speedBps)}/s (${((speedBps * 8) / (1000 * 1000)).toFixed(1)} Mbps)`;
 
-          let etaStr = "";
+          let eta = "";
           if (percent > 0 && percent < 100 && speedBps > 1000) {
             const remainBytes = totalBytes - downloadedBytes;
             const remainSec = Math.max(0, Math.round(remainBytes / speedBps));
             const m = Math.floor(remainSec / 60);
             const s = remainSec % 60;
-            etaStr = ` | ${C.brightCyan}Kalan:${C.reset} ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+            eta = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
           }
 
-          const status = `\r${C.cyan}[Doğrudan İndiriliyor]${C.reset} [${C.green}${bar}${C.reset}] ${C.brightGreen}${percent.toFixed(1).padStart(5)}%${C.reset} | ${C.brightWhite}${currentSizeStr} / ${totalSizeStr}${C.reset} | ${C.brightYellow}Hız: ${speedStr} (${mbpsStr})${C.reset}${etaStr}   `;
-          process.stdout.write(status);
+          process.stdout.write(buildProgressLine("Doğrudan İndiriliyor", percent, downloadedBytes, totalBytes, speedStr, eta));
         }
       }
 
@@ -896,7 +947,7 @@ async function downloadFullVideo(arg1, arg2, arg3, arg4, arg5) {
         });
       });
 
-      process.stdout.write("\r" + " ".repeat(110) + "\r");
+      process.stdout.write("\r\x1b[2K");
 
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       fs.renameSync(partPath, outputPath);
@@ -904,7 +955,7 @@ async function downloadFullVideo(arg1, arg2, arg3, arg4, arg5) {
       const finalSize = fs.statSync(outputPath).size;
       return { path: outputPath, size: finalSize, formattedSize: formatBytes(finalSize) };
     } catch (err) {
-      process.stdout.write("\r" + " ".repeat(110) + "\r");
+      process.stdout.write("\r\x1b[2K");
       if (attempt < maxRetries) {
         console.log(`\n${C.brightYellow}[UYARI] Doğrudan video indirme kesintisi (${err.message}). 3 saniye içinde kaldığı yerden (${formatBytes(existingBytes)}) devam edilecek... (Deneme ${attempt}/${maxRetries})${C.reset}`);
         await new Promise(r => setTimeout(r, 3000));
