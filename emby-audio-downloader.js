@@ -198,6 +198,17 @@ function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*]/g, "_").replace(/\s+/g, " ").trim();
 }
 
+function getOriginalMediaFilename(source, defaultName) {
+  if (source && source.Path) {
+    const parts = source.Path.split(/[\\/]/);
+    const last = parts[parts.length - 1];
+    if (last && last.trim().length > 0) {
+      return sanitizeFilename(last.trim());
+    }
+  }
+  return sanitizeFilename(defaultName);
+}
+
 function formatBytes(bytes) {
   if (!bytes || isNaN(bytes) || bytes === 0) return "0 B";
   const k = 1024;
@@ -272,7 +283,7 @@ class EmbyClient {
     const headers = {
       "Accept": "application/json",
       "Content-Type": "application/json",
-      "X-Emby-Authorization": 'MediaBrowser Client="EmbyDownloader", Device="Terminal", DeviceId="emby-dl-cli", Version="1.1.0"'
+      "X-Emby-Authorization": 'MediaBrowser Client="EmbyDownloader", Device="Terminal", DeviceId="emby-dl-cli", Version="1.2.0"'
     };
     if (this.token) {
       headers["X-Emby-Token"] = this.token;
@@ -485,9 +496,14 @@ class EmbyClient {
     return data.Items || [];
   }
 
-  buildStreamUrl(itemId, source) {
+  buildDirectVideoUrl(itemId, source) {
     const container = (source.Container || "mkv").toLowerCase();
-    return `${this.serverUrl}${this.prefix}/Videos/${itemId}/stream.${container}?static=true&MediaSourceId=${encodeURIComponent(source.Id)}&api_key=${encodeURIComponent(this.token)}`;
+    // static=true, direct play ve stream copy bayrakları ile sunucu tarafı transcoding/remuxing tamamen devre dışı bırakılır
+    return `${this.serverUrl}${this.prefix}/Videos/${itemId}/stream.${container}?static=true&MediaSourceId=${encodeURIComponent(source.Id)}&EnableDirectPlay=true&EnableDirectStream=true&AllowVideoStreamCopy=true&AllowAudioStreamCopy=true&api_key=${encodeURIComponent(this.token)}`;
+  }
+
+  buildStreamUrl(itemId, source) {
+    return this.buildDirectVideoUrl(itemId, source);
   }
 
   buildDirectAudioStreamUrl(itemId, source, audioStream) {
@@ -744,9 +760,37 @@ async function downloadSubtitle(client, itemId, sourceId, subtitleStream, output
 }
 
 // ==========================================
-// TAM VİDEO İNDİRME MOTORU (HTTP RANGE + RESUME)
+// DOĞRUDAN VİDEO İNDİRME MOTORU (DÖNÜŞTÜRMESİZ / BIT-FOR-BIT)
 // ==========================================
-async function downloadFullVideo(videoUrl, outputPath, expectedSize = 0) {
+async function downloadFullVideo(arg1, arg2, arg3, arg4, arg5) {
+  let videoUrl = "";
+  let outputPath = "";
+  let expectedSize = 0;
+  let customHeaders = {};
+
+  if (typeof arg1 === "string") {
+    videoUrl = arg1;
+    outputPath = arg2;
+    expectedSize = arg3 || 0;
+  } else {
+    const client = arg1;
+    const itemId = arg2;
+    const source = arg3;
+    outputPath = arg4;
+    expectedSize = arg5 || (source && source.Size) || 0;
+    customHeaders = client.getHeaders();
+
+    // 1. Emby resmi indirme uç noktasını kontrol et
+    videoUrl = client.buildDirectVideoUrl(itemId, source);
+    try {
+      const directDownloadUrl = `${client.serverUrl}${client.prefix}/Items/${itemId}/Download?api_key=${encodeURIComponent(client.token)}`;
+      const testRes = await fetch(directDownloadUrl, { method: "HEAD", headers: customHeaders });
+      if (testRes.ok) {
+        videoUrl = directDownloadUrl;
+      }
+    } catch (e) {}
+  }
+
   const dir = path.dirname(outputPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -769,7 +813,7 @@ async function downloadFullVideo(videoUrl, outputPath, expectedSize = 0) {
       return { path: outputPath, size: existingBytes, formattedSize: formatBytes(existingBytes) };
     }
 
-    const headers = {};
+    const headers = Object.assign({}, customHeaders);
     if (existingBytes > 0) {
       headers["Range"] = `bytes=${existingBytes}-`;
     }
@@ -840,7 +884,7 @@ async function downloadFullVideo(videoUrl, outputPath, expectedSize = 0) {
             etaStr = ` | ${C.brightCyan}Kalan:${C.reset} ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
           }
 
-          const status = `\r${C.cyan}[İndiriliyor]${C.reset} [${C.green}${bar}${C.reset}] ${C.brightGreen}${percent.toFixed(1).padStart(5)}%${C.reset} | ${C.brightWhite}${currentSizeStr} / ${totalSizeStr}${C.reset} | ${C.brightYellow}Hız: ${speedStr} (${mbpsStr})${C.reset}${etaStr}   `;
+          const status = `\r${C.cyan}[Doğrudan İndiriliyor]${C.reset} [${C.green}${bar}${C.reset}] ${C.brightGreen}${percent.toFixed(1).padStart(5)}%${C.reset} | ${C.brightWhite}${currentSizeStr} / ${totalSizeStr}${C.reset} | ${C.brightYellow}Hız: ${speedStr} (${mbpsStr})${C.reset}${etaStr}   `;
           process.stdout.write(status);
         }
       }
@@ -862,7 +906,7 @@ async function downloadFullVideo(videoUrl, outputPath, expectedSize = 0) {
     } catch (err) {
       process.stdout.write("\r" + " ".repeat(110) + "\r");
       if (attempt < maxRetries) {
-        console.log(`\n${C.brightYellow}[UYARI] Video indirme kesintisi (${err.message}). 3 saniye içinde kaldığı yerden (${formatBytes(existingBytes)}) devam edilecek... (Deneme ${attempt}/${maxRetries})${C.reset}`);
+        console.log(`\n${C.brightYellow}[UYARI] Doğrudan video indirme kesintisi (${err.message}). 3 saniye içinde kaldığı yerden (${formatBytes(existingBytes)}) devam edilecek... (Deneme ${attempt}/${maxRetries})${C.reset}`);
         await new Promise(r => setTimeout(r, 3000));
       } else {
         throw new Error(`Video indirme ${maxRetries} deneme sonrasında tamamlanamadı: ${err.message}`);
@@ -960,8 +1004,8 @@ class DownloadQueue {
         let result = null;
 
         if (item.type === "video") {
-          const videoUrl = client.buildStreamUrl(item.itemId, { Id: item.sourceId, Container: item.container });
-          result = await downloadFullVideo(videoUrl, item.outputPath, item.expectedSize);
+          console.log(`${C.green}[BILGI] Orijinal dosya hiçbir dönüştürme uygulanmadan doğrudan indiriliyor (Bit-for-bit direct download)...${C.reset}`);
+          result = await downloadFullVideo(client, item.itemId, { Id: item.sourceId, Container: item.container, Size: item.expectedSize }, item.outputPath, item.expectedSize);
         } else if (item.type === "audio") {
           const directAudioUrl = client.buildDirectAudioStreamUrl(item.itemId, { Id: item.sourceId }, item.audioStream);
           const fallbackVideoUrl = client.buildStreamUrl(item.itemId, { Id: item.sourceId, Container: item.container });
@@ -976,7 +1020,12 @@ class DownloadQueue {
         completedCount++;
         this.save();
 
-        console.log(`${C.green}[TAMAMLANDI]${C.reset} Dosya kaydedildi: ${result?.formattedSize || formatBytes(result?.size || 0)} (${elapsed} sn)`);
+        let verifyNote = "";
+        if (item.type === "video" && item.expectedSize > 0 && result?.size === item.expectedSize) {
+          verifyNote = ` | ${C.brightGreen}[Birebir Doğrulandı]${C.reset}`;
+        }
+
+        console.log(`${C.green}[TAMAMLANDI]${C.reset} Dosya kaydedildi: ${result?.formattedSize || formatBytes(result?.size || 0)} (${elapsed} sn)${verifyNote}`);
       } catch (err) {
         item.status = "error";
         item.error = err.message;
@@ -1356,7 +1405,7 @@ async function handleBatchEpisodesFlow(client, seriesItem, season, selectedEpiso
   while (true) {
     printHeader(`TOPLU BÖLÜM İNDİRME - ${seriesItem.Name} (${season.Name})`);
     console.log(`Seçilen Bölüm Sayısı: ${C.bold}${selectedEpisodes.length}${C.reset}\n`);
-    console.log(`  ${C.green}[1]${C.reset} Video Dosyalarını İndir (Tüm Dosya)`);
+    console.log(`  ${C.green}[1]${C.reset} Orijinal Video Dosyalarını İndir ${C.dim}(Dönüştürmesiz / Doğrudan Dosya İndirme)${C.reset}`);
     console.log(`  ${C.green}[2]${C.reset} Belirli Bir Dildeki Ses Dosyalarını İndir`);
     console.log(`  ${C.green}[3]${C.reset} Belirli Bir Dildeki Altyazı Dosyalarını İndir`);
     console.log(`  ${C.dim}[0] Bölüm Seçimine Dön${C.reset}\n`);
@@ -1369,7 +1418,7 @@ async function handleBatchEpisodesFlow(client, seriesItem, season, selectedEpiso
     let tasks = [];
 
     if (batchType === "1") {
-      // Toplu Video
+      // Toplu Orijinal Video
       for (const ep of selectedEpisodes) {
         let mediaSources = ep.MediaSources;
         if (!mediaSources || mediaSources.length === 0) {
@@ -1382,8 +1431,8 @@ async function handleBatchEpisodesFlow(client, seriesItem, season, selectedEpiso
         const container = (source.Container || "mkv").toLowerCase();
         const sNum = String(season.IndexNumber !== undefined ? season.IndexNumber : 1).padStart(2, "0");
         const eNum = String(ep.IndexNumber !== undefined ? ep.IndexNumber : 1).padStart(2, "0");
-        const baseFilename = `${seriesItem.Name} - S${sNum}E${eNum} - ${ep.Name || "Bolum"}.${container}`;
-        const safeFilename = sanitizeFilename(baseFilename);
+        const defaultName = `${seriesItem.Name} - S${sNum}E${eNum} - ${ep.Name || "Bolum"}.${container}`;
+        const safeFilename = getOriginalMediaFilename(source, defaultName);
         const targetPath = path.join(downloadDir, safeFilename);
 
         tasks.push({
@@ -1647,8 +1696,8 @@ async function handleDownloadTypesFlow(client, itemId, selectedSource, item, met
     console.log(`Seçilen Sürüm: ${C.bold}${selectedSource.Name || "Varsayılan"}${C.reset} (${container.toUpperCase()}${sizeStr ? " | " + sizeStr : ""})\n`);
     console.log(`  ${C.green}[1]${C.reset} Sadece Ses İndir ${C.dim}(Dönüştürmesiz Stream Copy - ${audioStreams.length} Ses Parçası)${C.reset}`);
     console.log(`  ${C.green}[2]${C.reset} Sadece Altyazı İndir ${C.dim}(${subtitleStreams.length} Altyazı Mevcut)${C.reset}`);
-    console.log(`  ${C.green}[3]${C.reset} Tüm Dosyayı (Video) İndir ${C.dim}(${sizeStr})${C.reset}`);
-    console.log(`  ${C.brightCyan}[4]${C.reset} Tümünü İndir ${C.dim}(Video + Tüm Sesler + Tüm Altyazılar)${C.reset}`);
+    console.log(`  ${C.green}[3]${C.reset} Orijinal Video Dosyasını İndir ${C.dim}(Dönüştürmesiz / Doğrudan Dosya İndirme - ${sizeStr})${C.reset}`);
+    console.log(`  ${C.brightCyan}[4]${C.reset} Tümünü İndir ${C.dim}(Orijinal Video + Tüm Sesler + Tüm Altyazılar)${C.reset}`);
     console.log(`  ${C.dim}[0] Geri Dön${C.reset}\n`);
 
     const dlType = await ask(`${C.bold}Seçiminiz (1-4, 0: Geri): ${C.reset}`);
@@ -1824,18 +1873,18 @@ async function handleDownloadTypesFlow(client, itemId, selectedSource, item, met
         return "DONE";
       }
     } else if (dlType === "3") {
-      // TÜM DOSYAYI (VİDEO) İNDİR
-      let baseFilename = "";
+      // ORİJİNAL VİDEO DOSYASINI İNDİR (DÖNÜŞTÜRMESİZ)
+      let defaultName = "";
       if (meta.isTv) {
         const sNum = String(meta.seasonIndex).padStart(2, "0");
         const eNum = String(meta.episodeIndex).padStart(2, "0");
-        baseFilename = `${meta.seriesName} - S${sNum}E${eNum} - ${meta.episodeName}.${container}`;
+        defaultName = `${meta.seriesName} - S${sNum}E${eNum} - ${meta.episodeName}.${container}`;
       } else {
         const yearStr = meta.year ? ` (${meta.year})` : "";
-        baseFilename = `${meta.title}${yearStr}.${container}`;
+        defaultName = `${meta.title}${yearStr}.${container}`;
       }
 
-      const safeFilename = sanitizeFilename(baseFilename);
+      const safeFilename = getOriginalMediaFilename(selectedSource, defaultName);
       const targetPath = path.join(downloadDir, safeFilename);
 
       const tasks = [{
@@ -1854,18 +1903,18 @@ async function handleDownloadTypesFlow(client, itemId, selectedSource, item, met
         return "DONE";
       }
     } else if (dlType === "4") {
-      // TÜMÜNÜ İNDİR
+      // TÜMÜNÜ İNDİR (ORİJİNAL VİDEO + SES + ALTYAZI)
       const tasks = [];
-      let videoBase = "";
+      let defaultVideoName = "";
       if (meta.isTv) {
         const sNum = String(meta.seasonIndex).padStart(2, "0");
         const eNum = String(meta.episodeIndex).padStart(2, "0");
-        videoBase = `${meta.seriesName} - S${sNum}E${eNum} - ${meta.episodeName}.${container}`;
+        defaultVideoName = `${meta.seriesName} - S${sNum}E${eNum} - ${meta.episodeName}.${container}`;
       } else {
         const yearStr = meta.year ? ` (${meta.year})` : "";
-        videoBase = `${meta.title}${yearStr}.${container}`;
+        defaultVideoName = `${meta.title}${yearStr}.${container}`;
       }
-      const safeVideoName = sanitizeFilename(videoBase);
+      const safeVideoName = getOriginalMediaFilename(selectedSource, defaultVideoName);
       tasks.push({
         type: "video",
         typeLabel: "Video",
@@ -1977,13 +2026,12 @@ async function promptExecutionChoice(tasks, queue, client) {
 async function main() {
   clearScreen();
   
+  // Doğrudan video indirme işlemi hiçbir dönüştürme gerektirmez; ffmpeg yalnızca ses akışı kopyalama için kontrol edilir
   try {
     execSync("ffmpeg -version", { stdio: "ignore" });
   } catch (e) {
-    console.error(`${C.red}${C.bold}[HATA] Sisteminizde 'ffmpeg' bulunamadı.${C.reset}`);
-    console.error(`Dönüştürmesiz ses akışı çıkarma işlemi için ffmpeg gereklidir.`);
-    console.error(`Kurulum komutu: sudo apt install ffmpeg`);
-    process.exit(1);
+    console.log(`${C.yellow}[UYARI] Sisteminizde 'ffmpeg' bulunamadı.${C.reset}`);
+    console.log(`${C.dim}Video indirmeleri dönüştürmesiz ve doğrudan yapılacağından ffmpeg gerektirmez; ancak sadece ses parçası çıkarma için gereklidir.${C.reset}\n`);
   }
 
   try {
@@ -2001,6 +2049,7 @@ module.exports = {
   DownloadQueue,
   cleanFilenameToTitle,
   getAudioExtension,
+  getOriginalMediaFilename,
   parseSelectionIndices,
   downloadAudioStream,
   downloadSubtitle,
